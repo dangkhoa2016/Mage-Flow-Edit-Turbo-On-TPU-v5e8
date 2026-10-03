@@ -1,0 +1,9 @@
+* text=auto
+*.py text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+qwen3vl-processor-assets/tokenizer.json -diff
+qwen3vl-processor-assets/merges.txt -diff
+qwen3vl-processor-assets/vocab.json -diff
