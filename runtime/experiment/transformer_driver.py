@@ -265,3 +265,227 @@ def extract_edit_target_prediction(packed_prediction, *, replicas: int, target_t
         raise ValueError(f"packed token count {pred.shape[1]} != expected {expected}")
     parts = [pred[0, i * block : i * block + target_tokens] for i in range(replicas)]
     return np.stack(parts, axis=0)
+
+
+# ---------------------------------------------------------------------------
+# C2 capture (test-only subclass; production source untouched)
+# ---------------------------------------------------------------------------
+def make_c2_capture_transformer(source: dict, observer: Callable[[dict], None]):
+    """Return a test-only MageFlowTransformer subclass capturing block-0 intermediates.
+
+    The subclass overrides ``forward`` to request ``capture=True`` on block 0 and forward the
+    intermediates to ``observer``. It never patches module globals or production source.
+    """
+    fm = source["full_model"]
+    root = fm.PERFECT_ROOT
+
+    class MageFlowTransformerC2Capture(fm.MageFlowTransformer):
+        def forward(
+            self,
+            img: Any,
+            txt: Any,
+            timesteps: Any,
+            image_rotary_emb: Any,
+            img_cu_seqlens: Any,
+            txt_cu_seqlens: Any,
+            joint_attention_kwargs: Optional[dict] = None,
+        ) -> Any:
+            import jax
+            import jax.numpy as jnp
+
+            dim = self.config.hidden_size
+            img = jnp.asarray(img, dtype=jnp.float32)
+            txt = jnp.asarray(txt, dtype=jnp.float32)
+            timesteps = jnp.asarray(timesteps, dtype=jnp.bfloat16).astype(jnp.float32)
+
+            image_stream = self._dense(img, "image_input")
+            text_stream = fm._rms_norm(
+                txt,
+                self.config.eps,
+                jnp.asarray(self._parameter_paths[f"{root}text_input_norm.scale"]),
+            )
+            text_stream = self._dense(text_stream, "text_input")
+
+            timesteps_proj = self._time_text_embed(timesteps)
+            temb = self._dense(timesteps_proj, "time_embedding.linear_1")
+            temb = self._dense(jax.nn.silu(temb), "time_embedding.linear_2")
+            temb = temb + jnp.zeros((txt.shape[0], dim), dtype=jnp.float32)
+
+            for index in sorted(self._block_layers):
+                block = self._block_layers[index]
+                if index == 0:
+                    text_stream, image_stream, intermediates = block.forward(
+                        hidden_states=image_stream,
+                        encoder_hidden_states=text_stream,
+                        temb=temb,
+                        image_rotary_emb=image_rotary_emb,
+                        txt_cu_lens=txt_cu_seqlens,
+                        img_cu_lens=img_cu_seqlens,
+                        joint_attention_kwargs=joint_attention_kwargs,
+                        capture=True,
+                    )
+                    observer(intermediates)
+                else:
+                    text_stream, image_stream = block.forward(
+                        hidden_states=image_stream,
+                        encoder_hidden_states=text_stream,
+                        temb=temb,
+                        image_rotary_emb=image_rotary_emb,
+                        txt_cu_lens=txt_cu_seqlens,
+                        img_cu_lens=img_cu_seqlens,
+                        joint_attention_kwargs=joint_attention_kwargs,
+                    )
+
+            image_stream = self._output_modulate(image_stream, temb, img_cu_seqlens)
+            return self._dense(image_stream, "output_projection")
+
+    return MageFlowTransformerC2Capture
+
+
+# ---------------------------------------------------------------------------
+# Runtime handle + orchestration
+# ---------------------------------------------------------------------------
+@dataclass
+class TransformerRuntime:
+    source: Optional[dict] = None
+    model: Any = None
+    config: Any = None
+    checkpoint_path: Optional[str] = None
+    dtype: str = TRANSFORMER_DTYPE
+    device_contract: str = "TPU_V5E_8"
+    sharding_contract: dict = field(default_factory=dict)
+    c2_observer: Optional[Callable] = None
+    bound: bool = False
+    leaf_count: int = TRANSFORMER_LEAF_COUNT
+
+    def assert_ready(self) -> None:
+        if self.source is None or self.model is None:
+            raise RuntimeError("transformer runtime not constructed (source/model missing)")
+        if not self.bound:
+            raise RuntimeError("transformer runtime not bound (call bind_transformer_state)")
+
+
+def build_transformer_runtime(
+    *,
+    source_root: Optional[str] = None,
+    transformer_checkpoint: Optional[str] = None,
+    config: Any = None,
+    restore_state: Optional[dict] = None,
+    mesh: Any = None,
+    c2_observer: Optional[Callable] = None,
+) -> TransformerRuntime:
+    """Construct (and optionally restore+bind) a bound MageFlowTransformer instance."""
+    source = load_transformer_source(source_root or DEFAULT_TRANSFORMER_SOURCE_HINT)
+    cls = make_c2_capture_transformer(source, c2_observer) if c2_observer is not None else source["full_model"].MageFlowTransformer
+    model = cls(config) if config is not None else cls()
+    runtime = TransformerRuntime(source=source, model=model, config=model.config, checkpoint_path=transformer_checkpoint)
+
+    state = restore_state
+    if state is None and transformer_checkpoint:
+        state = restore_transformer_checkpoint(transformer_checkpoint)
+    if state is not None:
+        bind_transformer_state(model, state)
+        runtime.bound = True
+    runtime.sharding_contract = static_sharding_plan(model)
+    if mesh is not None:
+        apply_transformer_sharding(model, mesh)
+    return runtime
+
+
+def transformer_forward(
+    runtime: TransformerRuntime,
+    latent: Any,
+    timesteps: Any,
+    txt_cond: Any,
+    image_rotary_emb: Any,
+    img_cu_seqlens: Any,
+    txt_cu_seqlens: Any,
+    hooks: Optional[CaptureHooks] = None,
+    *,
+    execute_compute: bool = False,
+    synthetic: bool = False,
+) -> dict:
+    """Bound-instance forward with C1/C2/C3 capture.
+
+    ``execute_compute=False`` returns the static call contract. ``execute_compute=True``
+    calls the BOUND instance's ``forward`` method. ``synthetic=True`` is an explicit
+    tiny-object CPU interface test only (never used for the TPU main forward).
+    """
+    runtime.assert_ready()
+    if hooks is not None and image_rotary_emb is not None:
+        hooks.c1_rope(image_rotary_emb)
+    contract = {
+        "config": {
+            "hidden_size": runtime.config.hidden_size,
+            "num_heads": runtime.config.num_heads,
+            "attention_head_dim": runtime.config.attention_head_dim,
+            "depth": runtime.config.depth,
+            "axes_dim": list(runtime.config.axes_dim),
+        },
+        "image_rotary_emb_shape": list(getattr(image_rotary_emb, "shape", [])),
+        "bound_leaf_count": runtime.leaf_count,
+        "sharding": {k: runtime.sharding_contract[k] for k in ("sharded", "replicated", "leaf_count")},
+        "device": runtime.device_contract,
+        "dtype": runtime.dtype,
+        "c2": {
+            "symbol": C2_SYMBOL,
+            "file": C2_FILE,
+            "boundary": C2_BOUNDARY_DESCRIPTION,
+            "expected_shape": C2_EXPECTED_SHAPE,
+            "expected_dtype": C2_EXPECTED_DTYPE,
+            "capture_mechanism": C2_CAPTURE_MECHANISM,
+        },
+    }
+    if not execute_compute:
+        return {"contract": contract, "compute": "DEFERRED"}
+
+    out = runtime.model.forward(
+        latent, txt_cond, timesteps, image_rotary_emb, img_cu_seqlens, txt_cu_seqlens
+    )
+    if hooks is not None:
+        hooks.c3_transformer_final_output(out)
+    return {"tensor": out, "contract": contract}
+
+
+if __name__ == "__main__":
+    import os
+
+    os.environ.setdefault("JAX_PLATFORMS", "cpu")
+    os.environ.setdefault("KERAS_BACKEND", "jax")
+    import numpy as np
+
+    src = DEFAULT_TRANSFORMER_SOURCE_HINT
+    source = load_transformer_source(src)
+    fm = source["full_model"]
+    tiny = fm.MageFlowTransformerConfig(
+        in_channels=8, out_channels=8, context_in_dim=16,
+        hidden_size=32, num_heads=4, attention_head_dim=8, depth=2, axes_dim=(2, 3, 3),
+    )
+    model = construct_transformer_model(source, tiny)
+    shapes = build_transformer_state_or_variables(model)
+    expected = 13 + tiny.depth * 32
+    assert len(shapes) == expected, (len(shapes), expected)
+
+    rng = np.random.RandomState(11)
+    state = {p: (rng.randn(*tuple(v.shape)) * 0.02).astype(np.float32) for p, v in shapes.items()}
+    bind_transformer_state(model, state)
+    plan = static_sharding_plan(model, expect_contract=False)
+    print("TF_TINY_LEAVES", len(shapes), "sharded", plan["sharded"], "replicated", plan["replicated"])
+
+    latent = np.zeros((1, 2, 8), dtype=np.float32)  # packed [1, N_img, in_channels]
+    txt = np.zeros((1, 3, 16), dtype=np.float32)
+    steps = np.array([0.5], dtype=np.float32)
+    img_tokens = 2
+    rope = np.zeros((img_tokens, 4, 2), dtype=np.float32)
+    img_cu = np.array([0, img_tokens], dtype=np.int32)
+    txt_cu = np.array([0, 3], dtype=np.int32)
+
+    captured = {}
+    cls = make_c2_capture_transformer(source, lambda inter: captured.update(inter))
+    model2 = cls(tiny)
+    bind_transformer_state(model2, state)
+    out = model2.forward(latent, txt, steps, rope, img_cu, txt_cu)
+    print("TF_BOUND_FORWARD", tuple(out.shape), "C2_IMAGE_Q", tuple(captured["image_q"].shape))
+    assert tuple(out.shape) == (1, img_tokens, 8)
+    assert tuple(captured["image_q"].shape) == (img_tokens, 4, 8)
+    print("TRANSFORMER_DRIVER_STATIC=PASS")
