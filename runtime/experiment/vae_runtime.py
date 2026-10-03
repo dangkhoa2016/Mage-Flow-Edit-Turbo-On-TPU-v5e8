@@ -425,3 +425,356 @@ def _timestep_embedder(
         prefix + ".mlp.2",
         x,
     )
+
+
+# =====================================================================
+# DiCo blocks
+# =====================================================================
+
+def _dico_block(
+    p,
+    prefix,
+    inp,
+    c,
+):
+
+    modulation = _linear(
+        p,
+        prefix
+        + ".adaLN_modulation.1",
+        _silu(c),
+    )
+
+    (
+        shift_msa,
+        scale_msa,
+        gate_msa,
+        shift_mlp,
+        scale_mlp,
+        gate_mlp,
+    ) = jnp.split(
+        modulation,
+        6,
+        axis=1,
+    )
+
+    x = _modulate_2d(
+        _layer_norm_2d(
+            p,
+            prefix + ".norm1",
+            inp,
+            affine=False,
+        ),
+        shift_msa,
+        scale_msa,
+    )
+
+    x = _conv(
+        p,
+        prefix + ".conv1",
+        x,
+    )
+
+    x = _conv(
+        p,
+        prefix + ".conv2",
+        x,
+        padding=1,
+        groups=x.shape[1],
+    )
+
+    x = _gelu(x)
+
+    ca = jnp.mean(
+        x,
+        axis=(2, 3),
+        keepdims=True,
+    )
+
+    ca = _conv(
+        p,
+        prefix + ".ca.1",
+        ca,
+    )
+
+    ca = jax.nn.sigmoid(ca)
+
+    x = x * ca
+
+    x = _conv(
+        p,
+        prefix + ".conv3",
+        x,
+    )
+
+    x = (
+        inp
+        + gate_msa[
+            :,
+            :,
+            None,
+            None,
+        ]
+        * x
+    )
+
+    y = _modulate_2d(
+        _layer_norm_2d(
+            p,
+            prefix + ".norm2",
+            x,
+            affine=False,
+        ),
+        shift_mlp,
+        scale_mlp,
+    )
+
+    y = _conv(
+        p,
+        prefix + ".conv4",
+        y,
+    )
+
+    y = _gelu(y)
+
+    y = _conv(
+        p,
+        prefix + ".conv5",
+        y,
+    )
+
+    return (
+        x
+        + gate_mlp[
+            :,
+            :,
+            None,
+            None,
+        ]
+        * y
+    )
+
+
+def _encoder_dico_block(
+    p,
+    prefix,
+    inp,
+):
+
+    x = _layer_norm_2d(
+        p,
+        prefix + ".norm1",
+        inp,
+        affine=True,
+    )
+
+    x = _conv(
+        p,
+        prefix + ".conv1",
+        x,
+    )
+
+    x = _conv(
+        p,
+        prefix + ".conv2",
+        x,
+        padding=1,
+        groups=x.shape[1],
+    )
+
+    x = _gelu(x)
+
+    ca = jnp.mean(
+        x,
+        axis=(2, 3),
+        keepdims=True,
+    )
+
+    ca = _conv(
+        p,
+        prefix + ".ca.1",
+        ca,
+    )
+
+    ca = jax.nn.sigmoid(ca)
+
+    x = x * ca
+
+    x = _conv(
+        p,
+        prefix + ".conv3",
+        x,
+    )
+
+    x = inp + x
+
+    y = _layer_norm_2d(
+        p,
+        prefix + ".norm2",
+        x,
+        affine=True,
+    )
+
+    y = _conv(
+        p,
+        prefix + ".conv4",
+        y,
+    )
+
+    y = _gelu(y)
+
+    y = _conv(
+        p,
+        prefix + ".conv5",
+        y,
+    )
+
+    return x + y
+
+
+# =====================================================================
+# Encoder
+# =====================================================================
+
+def _encoder_forward_pred(
+    p,
+    z_t,
+    t,
+    image,
+):
+
+    prefix = (
+        "student.dconv_encoder"
+    )
+
+    cond = _conv(
+        p,
+        prefix
+        + ".patch_cond_embed",
+        image,
+        stride=16,
+    )
+
+    for i in range(2):
+
+        cond = _encoder_dico_block(
+            p,
+            f"{prefix}.head_blocks.{i}",
+            cond,
+        )
+
+    cond = _conv(
+        p,
+        prefix + ".proj_down",
+        cond,
+    )
+
+    zp = _conv(
+        p,
+        prefix + ".z_proj",
+        z_t,
+    )
+
+    s = _conv(
+        p,
+        prefix + ".fuse_proj",
+        jnp.concatenate(
+            [
+                cond,
+                zp,
+            ],
+            axis=1,
+        ),
+    )
+
+    c = _timestep_embedder(
+        p,
+        prefix + ".t_embedder",
+        t,
+    )
+
+    for i in range(21):
+
+        s = _dico_block(
+            p,
+            f"{prefix}.blocks.{i}",
+            s,
+            c,
+        )
+
+    s = _layer_norm_2d(
+        p,
+        prefix + ".norm_out",
+        s,
+        affine=True,
+    )
+
+    return _conv(
+        p,
+        prefix + ".proj_out",
+        s,
+    )
+
+
+def encode_moments(
+    p,
+    image,
+):
+
+    b, _, h, w = image.shape
+
+    if (
+        h % 16
+        or w % 16
+    ):
+        raise ValueError(
+            "H,W must be multiples "
+            "of 16"
+        )
+
+    z_t = jnp.zeros(
+        (
+            b,
+            128,
+            h // 16,
+            w // 16,
+        ),
+        dtype=image.dtype,
+    )
+
+    t = jnp.zeros(
+        (b,),
+        dtype=image.dtype,
+    )
+
+    out = _encoder_forward_pred(
+        p,
+        z_t,
+        t,
+        image,
+    )
+
+    mean = out[:, :128]
+
+    logvar = jnp.clip(
+        out[:, 128:],
+        -20.0,
+        10.0,
+    )
+
+    return mean, logvar
+
+
+def encode(
+    p,
+    image,
+):
+
+    mean, _ = encode_moments(
+        p,
+        image,
+    )
+
+    # Frozen model config:
+    # sample_posterior = false
+    return mean
