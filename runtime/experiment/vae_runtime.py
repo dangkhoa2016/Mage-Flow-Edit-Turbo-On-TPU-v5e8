@@ -778,3 +778,400 @@ def encode(
     # Frozen model config:
     # sample_posterior = false
     return mean
+
+
+# =====================================================================
+# CoD latent decoder
+# =====================================================================
+
+def _resnet_block(
+    p,
+    prefix,
+    x,
+):
+
+    h = _group_norm(
+        p,
+        prefix + ".norm1",
+        x,
+    )
+
+    h = _silu(h)
+
+    h = _conv(
+        p,
+        prefix + ".conv1",
+        h,
+        padding=1,
+    )
+
+    h = _group_norm(
+        p,
+        prefix + ".norm2",
+        h,
+    )
+
+    h = _silu(h)
+
+    h = _conv(
+        p,
+        prefix + ".conv2",
+        h,
+        padding=1,
+    )
+
+    shortcut = (
+        prefix
+        + ".nin_shortcut.weight"
+    )
+
+    if shortcut in p:
+
+        x = _conv(
+            p,
+            prefix + ".nin_shortcut",
+            x,
+        )
+
+    return x + h
+
+
+def _attention_block(
+    p,
+    prefix,
+    x,
+    *,
+    patch_size=32,
+):
+
+    h0 = _group_norm(
+        p,
+        prefix + ".norm",
+        x,
+    )
+
+    Q = _conv(
+        p,
+        prefix + ".q",
+        h0,
+    )
+
+    K = _conv(
+        p,
+        prefix + ".k",
+        h0,
+    )
+
+    V = _conv(
+        p,
+        prefix + ".v",
+        h0,
+    )
+
+    d = patch_size
+
+    b, c, H, W = Q.shape
+
+    pad_h = (
+        d - H % d
+    ) % d
+
+    pad_w = (
+        d - W % d
+    ) % d
+
+    if pad_h or pad_w:
+
+        pads = (
+            (0, 0),
+            (0, 0),
+            (0, pad_h),
+            (0, pad_w),
+        )
+
+        Q = jnp.pad(
+            Q,
+            pads,
+            mode="edge",
+        )
+
+        K = jnp.pad(
+            K,
+            pads,
+            mode="edge",
+        )
+
+        V = jnp.pad(
+            V,
+            pads,
+            mode="edge",
+        )
+
+    H_pad = Q.shape[2]
+    W_pad = Q.shape[3]
+
+    nph = H_pad // d
+    npw = W_pad // d
+
+    npatches = (
+        nph * npw
+    )
+
+    def to_patches(t):
+
+        return (
+            t.reshape(
+                b,
+                c,
+                nph,
+                d,
+                npw,
+                d,
+            )
+            .transpose(
+                0,
+                2,
+                4,
+                1,
+                3,
+                5,
+            )
+            .reshape(
+                b * npatches,
+                c,
+                d * d,
+            )
+        )
+
+    Qp = to_patches(Q)
+    Kp = to_patches(K)
+    Vp = to_patches(V)
+
+    attn = (
+        jnp.einsum(
+            "bci,bcj->bij",
+            Qp,
+            Kp,
+        )
+        * (c ** -0.5)
+    )
+
+    attn = jax.nn.softmax(
+        attn,
+        axis=2,
+    )
+
+    attn = attn.transpose(
+        0,
+        2,
+        1,
+    )
+
+    out = jnp.einsum(
+        "bcj,bji->bci",
+        Vp,
+        attn,
+    )
+
+    out = (
+        out.reshape(
+            b,
+            nph,
+            npw,
+            c,
+            d,
+            d,
+        )
+        .transpose(
+            0,
+            3,
+            1,
+            4,
+            2,
+            5,
+        )
+        .reshape(
+            b,
+            c,
+            H_pad,
+            W_pad,
+        )
+    )
+
+    if pad_h or pad_w:
+
+        out = out[
+            :,
+            :,
+            :H,
+            :W,
+        ]
+
+    out = _conv(
+        p,
+        prefix + ".proj_out",
+        out,
+    )
+
+    return x + out
+
+
+def _decoder_condition(
+    p,
+    z,
+):
+
+    prefix = (
+        "pipeline."
+        "y_embedder.decoder"
+    )
+
+    h = _conv(
+        p,
+        prefix + ".conv_in",
+        z,
+        padding=1,
+    )
+
+    h = _resnet_block(
+        p,
+        prefix + ".block.0",
+        h,
+    )
+
+    h = _attention_block(
+        p,
+        prefix + ".block.1",
+        h,
+        patch_size=32,
+    )
+
+    h = _resnet_block(
+        p,
+        prefix + ".block.2",
+        h,
+    )
+
+    h = _attention_block(
+        p,
+        prefix + ".block.3",
+        h,
+        patch_size=32,
+    )
+
+    h = _resnet_block(
+        p,
+        prefix + ".block.4",
+        h,
+    )
+
+    h = _group_norm(
+        p,
+        prefix + ".norm_out",
+        h,
+    )
+
+    h = _silu(h)
+
+    return _conv(
+        p,
+        prefix + ".conv_out",
+        h,
+        padding=1,
+    )
+
+
+# =====================================================================
+# unfold/fold equivalent for kernel=stride=16
+# =====================================================================
+
+def _unfold_nonoverlap(
+    x,
+    *,
+    ps=16,
+):
+
+    b, c, H, W = x.shape
+
+    gh = H // ps
+    gw = W // ps
+
+    return (
+        x.reshape(
+            b,
+            c,
+            gh,
+            ps,
+            gw,
+            ps,
+        )
+        .transpose(
+            0,
+            1,
+            3,
+            5,
+            2,
+            4,
+        )
+        .reshape(
+            b,
+            c * ps * ps,
+            gh * gw,
+        )
+    )
+
+
+def _fold_nonoverlap(
+    patches,
+    *,
+    batch,
+    gh,
+    gw,
+    ps=16,
+):
+
+    # patches:
+    # [B*L, P2, C]
+
+    channels = (
+        patches.shape[-1]
+    )
+
+    x = patches.reshape(
+        batch,
+        gh * gw,
+        ps * ps,
+        channels,
+    )
+
+    x = x.transpose(
+        0,
+        1,
+        3,
+        2,
+    )
+
+    x = x.reshape(
+        batch,
+        gh,
+        gw,
+        channels,
+        ps,
+        ps,
+    )
+
+    x = x.transpose(
+        0,
+        3,
+        1,
+        4,
+        2,
+        5,
+    )
+
+    return x.reshape(
+        batch,
+        channels,
+        gh * ps,
+        gw * ps,
+    )
