@@ -1175,3 +1175,446 @@ def _fold_nonoverlap(
         gh * ps,
         gw * ps,
     )
+
+
+# =====================================================================
+# NerfEmbedder
+# =====================================================================
+
+def _nerf_embed(
+    p,
+    prefix,
+    x,
+    *,
+    max_freqs=8,
+):
+
+    _, P2, _ = x.shape
+
+    ps = int(
+        P2 ** 0.5
+    )
+
+    dtype = x.dtype
+
+    pos = jnp.linspace(
+        0,
+        1,
+        ps,
+        dtype=dtype,
+    )
+
+    pos_y, pos_x = (
+        jnp.meshgrid(
+            pos,
+            pos,
+            indexing="ij",
+        )
+    )
+
+    pos_x = pos_x.reshape(
+        -1,
+        1,
+        1,
+    )
+
+    pos_y = pos_y.reshape(
+        -1,
+        1,
+        1,
+    )
+
+    freqs = jnp.linspace(
+        0,
+        max_freqs,
+        max_freqs,
+        dtype=dtype,
+    )
+
+    fx = freqs[
+        None,
+        :,
+        None,
+    ]
+
+    fy = freqs[
+        None,
+        None,
+        :,
+    ]
+
+    coeffs = (
+        1
+        + fx * fy
+    ) ** -1
+
+    dct_x = jnp.cos(
+        pos_x
+        * fx
+        * jnp.pi
+    )
+
+    dct_y = jnp.cos(
+        pos_y
+        * fy
+        * jnp.pi
+    )
+
+    dct = (
+        dct_x
+        * dct_y
+        * coeffs
+    ).reshape(
+        1,
+        -1,
+        max_freqs ** 2,
+    )
+
+    dct = jnp.broadcast_to(
+        dct,
+        (
+            x.shape[0],
+            P2,
+            max_freqs ** 2,
+        ),
+    )
+
+    return _linear(
+        p,
+        prefix + ".embedder.0",
+        jnp.concatenate(
+            [
+                x,
+                dct,
+            ],
+            axis=-1,
+        ),
+    )
+
+
+# =====================================================================
+# Final decoder MLP
+# =====================================================================
+
+def _mlp_res_block(
+    p,
+    prefix,
+    x,
+    y,
+):
+
+    shift_scale_gate = (
+        _linear(
+            p,
+            prefix
+            + ".adaLN_modulation.1",
+            _silu(y),
+        )
+    )
+
+    (
+        shift,
+        scale,
+        gate,
+    ) = jnp.split(
+        shift_scale_gate,
+        3,
+        axis=-1,
+    )
+
+    h = _layer_norm_last(
+        p,
+        prefix + ".in_ln",
+        x,
+    )
+
+    h = (
+        h
+        * (1 + scale)
+        + shift
+    )
+
+    h = _linear(
+        p,
+        prefix + ".mlp.0",
+        h,
+    )
+
+    h = _silu(h)
+
+    h = _linear(
+        p,
+        prefix + ".mlp.2",
+        h,
+    )
+
+    return (
+        x
+        + gate * h
+    )
+
+
+def _decode_denoiser(
+    p,
+    noise,
+    t,
+    cond,
+):
+
+    prefix = "pipeline"
+
+    b, _, H, W = (
+        noise.shape
+    )
+
+    c = _timestep_embedder(
+        p,
+        prefix + ".t_embedder",
+        t,
+    )
+
+    s1 = _conv(
+        p,
+        prefix
+        + ".s_embedder.proj1",
+        noise,
+        stride=16,
+    )
+
+    s = _conv(
+        p,
+        prefix
+        + ".s_embedder.proj2",
+        jnp.concatenate(
+            [
+                s1,
+                cond,
+            ],
+            axis=1,
+        ),
+    )
+
+    for i in range(21):
+
+        s = _dico_block(
+            p,
+            f"{prefix}.blocks.{i}",
+            s,
+            c,
+        )
+
+    gh = s.shape[2]
+    gw = s.shape[3]
+
+    length = (
+        gh * gw
+    )
+
+    # source:
+    # s.permute(0,2,3,1)
+    #  .reshape(-1, hidden_size)
+
+    sflat = (
+        s.transpose(
+            0,
+            2,
+            3,
+            1,
+        )
+        .reshape(
+            b * length,
+            s.shape[1],
+        )
+    )
+
+    # torch.nn.functional.unfold(
+    #   x,
+    #   kernel_size=16,
+    #   stride=16
+    # )
+
+    x_unfold = (
+        _unfold_nonoverlap(
+            noise,
+            ps=16,
+        )
+    )
+
+    y = _conv(
+        p,
+        prefix
+        + ".y_embedder_x",
+        cond,
+    )
+
+    y_flat = y.reshape(
+        b,
+        y.shape[1],
+        length,
+    )
+
+    # [B, 768+8192, L]
+
+    x = jnp.concatenate(
+        [
+            x_unfold,
+            y_flat,
+        ],
+        axis=1,
+    )
+
+    # source:
+    #
+    # x.reshape(
+    #   b,
+    #   -1,
+    #   patch_size ** 2,
+    #   length
+    # )
+    # .permute(0,3,2,1)
+    # .flatten(0,1)
+
+    x = (
+        x.reshape(
+            b,
+            -1,
+            16 * 16,
+            length,
+        )
+        .transpose(
+            0,
+            3,
+            2,
+            1,
+        )
+        .reshape(
+            b * length,
+            16 * 16,
+            -1,
+        )
+    )
+
+    x = _nerf_embed(
+        p,
+        prefix + ".x_embedder",
+        x,
+        max_freqs=8,
+    )
+
+    # SimpleMLPAdaLN.input_proj
+
+    x = _linear(
+        p,
+        prefix
+        + ".dec_net.input_proj",
+        x,
+    )
+
+    # c:
+    # [B*L, 384]
+    #
+    # cond_embed:
+    # 384 -> 256 * 32
+
+    cond_tokens = _linear(
+        p,
+        prefix
+        + ".dec_net.cond_embed",
+        sflat,
+    )
+
+    cond_tokens = (
+        cond_tokens.reshape(
+            b * length,
+            16 * 16,
+            -1,
+        )
+    )
+
+    for i in range(3):
+
+        x = _mlp_res_block(
+            p,
+            f"{prefix}."
+            f"dec_net.res_blocks.{i}",
+            x,
+            cond_tokens,
+        )
+
+    # NerfFinalLayer
+
+    x = _rms_norm(
+        p,
+        prefix
+        + ".final_layer.norm",
+        x,
+    )
+
+    x = _linear(
+        p,
+        prefix
+        + ".final_layer.linear",
+        x,
+    )
+
+    # x:
+    # [B*L, 256, 3]
+    #
+    # source then performs:
+    # transpose(1,2)
+    # reshape(B,L,-1)
+    # transpose(1,2)
+    # F.fold
+
+    return _fold_nonoverlap(
+        x,
+        batch=b,
+        gh=gh,
+        gw=gw,
+        ps=16,
+    )
+
+
+def decode(
+    p,
+    latent,
+):
+
+    cond = _decoder_condition(
+        p,
+        latent,
+    )
+
+    b = latent.shape[0]
+
+    H = (
+        latent.shape[2]
+        * 16
+    )
+
+    W = (
+        latent.shape[3]
+        * 16
+    )
+
+    noise = jnp.zeros(
+        (
+            b,
+            3,
+            H,
+            W,
+        ),
+        dtype=latent.dtype,
+    )
+
+    t = jnp.zeros(
+        (b,),
+        dtype=latent.dtype,
+    )
+
+    return _decode_denoiser(
+        p,
+        noise,
+        t,
+        cond,
+    )
