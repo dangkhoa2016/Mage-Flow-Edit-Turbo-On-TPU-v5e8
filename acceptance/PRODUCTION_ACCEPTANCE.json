@@ -1,0 +1,92 @@
+{
+  "format_version": 1,
+  "project": "Mage-Flow-Edit-Turbo JAX TPU v5e-8",
+  "status": "PASS",
+  "case_count": 3,
+  "cases": [
+    {
+      "name": "fox-autumn",
+      "run_dir": "/kaggle/working/mage-flow-edit-e2e-512",
+      "status": "PASS",
+      "errors": [],
+      "resolution": [
+        512,
+        512
+      ],
+      "topology": "4x2",
+      "seeds": [
+        42,
+        43,
+        44,
+        45
+      ],
+      "conditioning_tokens": 286,
+      "png_count": 4,
+      "unique_png_sha256": 4,
+      "png_sha256": [
+        "ca9b93eeb643ac761a3ed366b44a6de74fd055df6d35ec537b61dd06fba1b8e5",
+        "75186d5555e55255ec764c2af01c74510c973f5ad42e50309834293915910c5b",
+        "6372868319162b1dcbe5a76fd92d4f562c7476f6e0c47207feeef895a6d7814c",
+        "48c5e918b2e312a721cc4413128399f46706f58edba079a5b935f66b7d0d6c09"
+      ],
+      "transformer_wall_s": 50.852434158325195,
+      "peak_hbm_bytes": 10385165824
+    },
+    {
+      "name": "portrait-golden-hour",
+      "run_dir": "/kaggle/working/mage-flow-edit-acceptance-portrait",
+      "status": "PASS",
+      "errors": [],
+      "resolution": [
+        512,
+        512
+      ],
+      "topology": "4x2",
+      "seeds": [
+        42,
+        43,
+        44,
+        45
+      ],
+      "conditioning_tokens": 309,
+      "png_count": 4,
+      "unique_png_sha256": 4,
+      "png_sha256": [
+        "43211bc07a77fe16fc755c36345895c6b3788a8afe8bb5a43a5e09a1781fe12b",
+        "05d369c3806bbbd45f413ed15b4affd1a320707956be331a336ded0f2dc6f3e2",
+        "1fc349631e29b116cb8b22c68314e429bb8272be812e5338d1b1cc5ed64bec44",
+        "adf54ee82298e7fe2e7879341ed1e14cdf51dc57af527f8091c423e738e9dd43"
+      ],
+      "transformer_wall_s": 52.65050029754639,
+      "peak_hbm_bytes": 10425102848
+    },
+    {
+      "name": "island-winter",
+      "run_dir": "/kaggle/working/mage-flow-edit-acceptance-island",
+      "status": "PASS",
+      "errors": [],
+      "resolution": [
+        512,
+        512
+      ],
+      "topology": "4x2",
+      "seeds": [
+        42,
+        43,
+        44,
+        45
+      ],
+      "conditioning_tokens": 311,
+      "png_count": 4,
+      "unique_png_sha256": 4,
+      "png_sha256": [
+        "cb773c0af1ef296e779a9782d88b44f899ee8b7e1363fc7ea9a3ac622e948066",
+        "47c3f6049dbeba1492729fd0b7a85f234fb312ed831612ac4e0002e045b76983",
+        "5a833f630623547825a5a3b276ffdc021f536a37afabcc701cc42640e8d60203",
+        "aec7adc70f7f322a02a532e1897901e365e4540510da552d9c59ff59104565d3"
+      ],
+      "transformer_wall_s": 53.77585554122925,
+      "peak_hbm_bytes": 10395812864
+    }
+  ]
+}
