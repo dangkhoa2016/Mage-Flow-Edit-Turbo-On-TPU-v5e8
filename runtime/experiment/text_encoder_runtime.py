@@ -351,3 +351,353 @@ def language_model_state(
             f"language_model leaf count {len(sub)} != {TE_LANGUAGE_MODEL_LEAF_COUNT}"
         )
     return sub
+
+
+# ---------------------------------------------------------------------------
+# Forward implementation (pure JAX; jax imported lazily)
+# ---------------------------------------------------------------------------
+def _get(p: dict, key: str) -> Any:
+    if key not in p:
+        raise KeyError(f"missing text-encoder parameter: {key}")
+    return p[key]
+
+
+def _rms_norm(x: Any, scale: Any, eps: float) -> Any:
+    import jax.numpy as jnp
+
+    in_dtype = x.dtype
+    x32 = x.astype(jnp.float32)
+    variance = jnp.mean(jnp.square(x32), axis=-1, keepdims=True)
+    x32 = x32 * jnp.reciprocal(jnp.sqrt(variance + eps))
+    return (scale.astype(jnp.float32) * x32).astype(in_dtype)
+
+
+def _linear(x: Any, kernel: Any) -> Any:
+    import jax.numpy as jnp
+
+    return jnp.matmul(x, kernel)
+
+
+def _silu(x: Any) -> Any:
+    import jax.numpy as jnp
+
+    return x * (1.0 / (1.0 + jnp.exp(-x)))
+
+
+def _rotate_half(x: Any) -> Any:
+    import jax.numpy as jnp
+
+    half = x.shape[-1] // 2
+    x1 = x[..., :half]
+    x2 = x[..., half:]
+    return jnp.concatenate([-x2, x1], axis=-1)
+
+
+def _inv_freq(cfg: TextEncoderConfig, dtype: Any) -> Any:
+    import jax.numpy as jnp
+
+    dim = cfg.head_dim
+    idx = jnp.arange(0, dim, 2, dtype=jnp.float32)
+    return 1.0 / (jnp.float32(cfg.rope_theta) ** (idx / jnp.float32(dim)))
+
+
+def _rotary_cos_sin(cfg: TextEncoderConfig, position_ids: Any, out_dtype: Any) -> tuple:
+    """Faithful port of Qwen3VLTextRotaryEmbedding.forward + apply_interleaved_mrope.
+
+    ``position_ids`` shape (3, B, S). Text-only callers pass four identical ``arange`` rows,
+    of which rows 1:4 become the (3,B,S) mRoPE positions -> the interleaved merge is a no-op
+    and this reduces to standard RoPE (matching TE8 text-only semantics).
+    """
+    import jax.numpy as jnp
+
+    inv = _inv_freq(cfg, out_dtype)  # (dim/2,)
+    inv_e = inv[None, None, :, None]  # (1,1,dim/2,1)
+    pos = position_ids.astype(jnp.float32)[:, :, None, :]  # (3,B,1,S)
+    freqs = jnp.matmul(inv_e, pos).transpose(0, 1, 3, 2)  # (3,B,S,dim/2)
+
+    if cfg.mrope_interleaved:
+        freqs_t = freqs[0]
+        for dim, offset in enumerate((1, 2), start=1):
+            length = cfg.mrope_section[dim] * 3
+            idx = slice(offset, length, 3)  # static Python slice (TE8 corrective)
+            freqs_t = freqs_t.at[..., idx].set(freqs[dim, ..., idx])
+    else:
+        freqs_t = freqs[0]
+
+    emb = jnp.concatenate([freqs_t, freqs_t], axis=-1)  # (B,S,dim)
+    cos = jnp.cos(emb).astype(out_dtype)
+    sin = jnp.sin(emb).astype(out_dtype)
+    return cos, sin
+
+
+def _apply_rotary(q: Any, k: Any, cos: Any, sin: Any) -> tuple:
+    import jax.numpy as jnp
+
+    cos = jnp.expand_dims(cos, 1)  # (B,1,S,dim)
+    sin = jnp.expand_dims(sin, 1)
+    q_embed = (q * cos) + (_rotate_half(q) * sin)
+    k_embed = (k * cos) + (_rotate_half(k) * sin)
+    return q_embed, k_embed
+
+
+def _repeat_kv(x: Any, n_rep: int) -> Any:
+    import jax.numpy as jnp
+
+    if n_rep == 1:
+        return x
+    b, kv, s, d = x.shape
+    x = jnp.broadcast_to(x[:, :, None, :, :], (b, kv, n_rep, s, d))
+    return x.reshape(b, kv * n_rep, s, d)
+
+
+def _causal_mask(seq_len: int, dtype: Any) -> Any:
+    import jax.numpy as jnp
+
+    m = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
+    neg = jnp.finfo(jnp.float32).min
+    return jnp.where(m, jnp.float32(0.0), neg)[None, None, :, :].astype(dtype)
+
+
+def _attention(
+    p: dict,
+    prefix: str,
+    x: Any,
+    cos: Any,
+    sin: Any,
+    cfg: TextEncoderConfig,
+) -> Any:
+    import jax
+    import jax.numpy as jnp
+
+    B, S, _ = x.shape
+    hd = cfg.head_dim
+    q = _linear(x, _get(p, f"{prefix}.q_proj.kernel")).reshape(B, S, cfg.num_attention_heads, hd)
+    k = _linear(x, _get(p, f"{prefix}.k_proj.kernel")).reshape(B, S, cfg.num_key_value_heads, hd)
+    v = _linear(x, _get(p, f"{prefix}.v_proj.kernel")).reshape(B, S, cfg.num_key_value_heads, hd)
+
+    q = _rms_norm(q, _get(p, f"{prefix}.q_norm.scale"), cfg.rms_norm_eps)
+    k = _rms_norm(k, _get(p, f"{prefix}.k_norm.scale"), cfg.rms_norm_eps)
+
+    q = q.transpose(0, 2, 1, 3)  # (B, heads, S, hd)
+    k = k.transpose(0, 2, 1, 3)
+    v = v.transpose(0, 2, 1, 3)
+
+    q, k = _apply_rotary(q, k, cos, sin)
+    k = _repeat_kv(k, cfg.num_key_value_groups)
+    v = _repeat_kv(v, cfg.num_key_value_groups)
+
+    scaling = hd ** -0.5
+    scores = jnp.matmul(q, k.transpose(0, 1, 3, 2)) * jnp.float32(scaling)
+    scores = scores + _causal_mask(S, scores.dtype)
+    probs = jax.nn.softmax(scores.astype(jnp.float32), axis=-1).astype(q.dtype)
+    out = jnp.matmul(probs, v)  # (B, heads, S, hd)
+    out = out.transpose(0, 2, 1, 3).reshape(B, S, cfg.num_attention_heads * hd)
+    return _linear(out, _get(p, f"{prefix}.o_proj.kernel"))
+
+
+def _mlp(p: dict, prefix: str, x: Any, cfg: TextEncoderConfig) -> Any:
+    gate = _linear(x, _get(p, f"{prefix}.gate_proj.kernel"))
+    up = _linear(x, _get(p, f"{prefix}.up_proj.kernel"))
+    return _linear(_silu(gate) * up, _get(p, f"{prefix}.down_proj.kernel"))
+
+
+def _decoder_layer(
+    p: dict, base_prefix: str, layer: int, x: Any, cos: Any, sin: Any, cfg: TextEncoderConfig
+) -> Any:
+    base = f"{base_prefix}.layers.{layer}"
+    residual = x
+    h = _rms_norm(x, _get(p, f"{base}.input_layernorm.scale"), cfg.rms_norm_eps)
+    h = _attention(p, f"{base}.self_attn", h, cos, sin, cfg)
+    x = residual + h
+    residual = x
+    h = _rms_norm(x, _get(p, f"{base}.post_attention_layernorm.scale"), cfg.rms_norm_eps)
+    x = residual + _mlp(p, f"{base}.mlp", h, cfg)
+    return x
+
+
+def _default_position_ids(batch: int, seq: int, dtype: Any) -> Any:
+    import jax.numpy as jnp
+
+    pos = jnp.arange(seq, dtype=dtype)
+    # text-only: four identical rows (text, temporal, height, width)
+    return jnp.broadcast_to(pos[None, None, :], (4, batch, seq))
+
+
+def text_encoder_forward(
+    runtime: TextEncoderRuntime,
+    input_ids: Any,
+    *,
+    position_ids: Any = None,
+) -> Any:
+    """Run the text-only Qwen3VL forward: input_ids int32 [B,S] -> [B,S,hidden] runtime dtype.
+
+    Only the 398 ``language_model`` leaves are consumed (TE8 scope). The visual tower is never
+    instantiated for T2P CASE_001.
+    """
+    import jax.numpy as jnp
+
+    if not runtime.bound or runtime.params is None:
+        raise RuntimeError(
+            "text_encoder_forward requires a bound restored state "
+            "(call bind_text_encoder_state first; failing closed)"
+        )
+    cfg = runtime.config
+    lm = language_model_state(runtime.params, runtime.param_root, strict=False)
+
+    ids = jnp.asarray(input_ids).astype(jnp.int32)
+    if ids.ndim != 2:
+        raise ValueError(f"input_ids must be [B,S]; got shape {tuple(ids.shape)}")
+    B, S = ids.shape
+    if S > cfg.max_position_embeddings:
+        raise ValueError("sequence length exceeds max_position_embeddings")
+
+    base_prefix = f"{runtime.param_root}.language_model"
+    embed = _get(lm, f"{base_prefix}.embed_tokens.embedding")
+    x = embed[ids]  # (B,S,hidden)
+
+    if position_ids is None:
+        position_ids = _default_position_ids(B, S, jnp.int32)
+    else:
+        position_ids = jnp.asarray(position_ids)
+        if position_ids.ndim == 2:
+            position_ids = jnp.broadcast_to(position_ids[None, ...], (4, B, S))
+    # mRoPE consumes rows 1:4 (text, height, width)
+    mrope_positions = position_ids[1:]
+    cos, sin = _rotary_cos_sin(cfg, mrope_positions, x.dtype)
+
+    for layer in range(cfg.num_hidden_layers):
+        x = _decoder_layer(lm, base_prefix, layer, x, cos, sin, cfg)
+
+    x = _rms_norm(x, _get(lm, f"{base_prefix}.norm.scale"), cfg.rms_norm_eps)
+    return x
+
+
+# ---------------------------------------------------------------------------
+# Tiny synthetic CPU self-test (never runs the full model)
+# ---------------------------------------------------------------------------
+def _numpy_reference(cfg: TextEncoderConfig, p_np: dict, ids_np) -> "object":
+    """Independent NumPy reference of the same equations (for tiny-config validation)."""
+    import numpy as np
+
+    rr = np.random.RandomState(0)
+
+    def rms(x, s):
+        x = x.astype(np.float64)
+        v = np.mean(x * x, axis=-1, keepdims=True)
+        return (s.astype(np.float64) * (x / np.sqrt(v + cfg.rms_norm_eps))).astype(np.float32)
+
+    def lin(x, w):
+        return np.matmul(x, w).astype(np.float32)
+
+    def rot_half(x):
+        h = x.shape[-1] // 2
+        return np.concatenate([-x[..., h:], x[..., :h]], axis=-1)
+
+    dim = cfg.head_dim
+    inv = 1.0 / (cfg.rope_theta ** (np.arange(0, dim, 2, dtype=np.float64) / dim))
+    pos = np.arange(ids_np.shape[1], dtype=np.float64)
+    freqs = np.outer(pos, inv)  # (S, dim/2)
+    emb = np.concatenate([freqs, freqs], axis=-1)
+    cos = np.cos(emb).astype(np.float32)[None, None]
+    sin = np.sin(emb).astype(np.float32)[None, None]
+
+    x = p_np["embed"][ids_np].astype(np.float32)
+    B, S, _ = x.shape
+    hd = cfg.head_dim
+    nh, nkv = cfg.num_attention_heads, cfg.num_key_value_heads
+    nrep = nh // nkv
+    for layer in range(cfg.num_hidden_layers):
+        L = f"L{layer}."
+        res = x
+        h = rms(x, p_np[L + "in_norm"])
+        q = rms(lin(h, p_np[L + "q"]).reshape(B, S, nh, hd), p_np[L + "qn"]).transpose(0, 2, 1, 3)
+        k = rms(lin(h, p_np[L + "k"]).reshape(B, S, nkv, hd), p_np[L + "kn"]).transpose(0, 2, 1, 3)
+        v = lin(h, p_np[L + "v"]).reshape(B, S, nkv, hd).transpose(0, 2, 1, 3)
+        q = q * cos + rot_half(q) * sin
+        k = k * cos + rot_half(k) * sin
+        k = np.repeat(k, nrep, axis=1)
+        v = np.repeat(v, nrep, axis=1)
+        sc = np.matmul(q, k.transpose(0, 1, 3, 2)) * (hd ** -0.5)
+        mask = np.tril(np.ones((S, S), dtype=bool))[None, None]
+        sc = np.where(mask, sc, -1e30)
+        pr = np.exp(sc - sc.max(-1, keepdims=True))
+        pr = pr / pr.sum(-1, keepdims=True)
+        o = np.matmul(pr, v).transpose(0, 2, 1, 3).reshape(B, S, nh * hd)
+        x = res + lin(o, p_np[L + "o"])
+        res = x
+        h = rms(x, p_np[L + "post_norm"])
+        g = lin(h, p_np[L + "gate"])
+        u = lin(h, p_np[L + "up"])
+        x = res + lin((g / (1 + np.exp(-g))) * u, p_np[L + "down"])
+    x = rms(x, p_np["final_norm"])
+    return x
+
+
+if __name__ == "__main__":
+    import os
+
+    os.environ.setdefault("JAX_PLATFORMS", "cpu")
+    import numpy as np
+    import jax.numpy as jnp
+
+    cfg = TextEncoderConfig(
+        hidden_size=32, num_hidden_layers=2, vocab_size=64, head_dim=8,
+        num_attention_heads=4, num_key_value_heads=2, intermediate_size=48,
+        rms_norm_eps=1e-6, rope_theta=1e4, mrope_section=[2, 1, 1],
+    )
+    rng = np.random.RandomState(1234)
+
+    def w(shape, scale=0.05):
+        return (rng.standard_normal(shape) * scale).astype(np.float32)
+
+    p = {"text_encoder.language_model.embed_tokens.embedding": w((cfg.vocab_size, cfg.hidden_size))}
+    pref = "text_encoder.language_model"
+    for i in range(cfg.num_hidden_layers):
+        base = f"{pref}.layers.{i}"
+        p[f"{base}.input_layernorm.scale"] = np.ones(cfg.hidden_size, np.float32)
+        p[f"{base}.post_attention_layernorm.scale"] = np.ones(cfg.hidden_size, np.float32)
+        p[f"{base}.self_attn.q_proj.kernel"] = w((cfg.hidden_size, cfg.num_attention_heads * cfg.head_dim))
+        p[f"{base}.self_attn.k_proj.kernel"] = w((cfg.hidden_size, cfg.num_key_value_heads * cfg.head_dim))
+        p[f"{base}.self_attn.v_proj.kernel"] = w((cfg.hidden_size, cfg.num_key_value_heads * cfg.head_dim))
+        p[f"{base}.self_attn.o_proj.kernel"] = w((cfg.num_attention_heads * cfg.head_dim, cfg.hidden_size))
+        p[f"{base}.self_attn.q_norm.scale"] = np.ones(cfg.head_dim, np.float32)
+        p[f"{base}.self_attn.k_norm.scale"] = np.ones(cfg.head_dim, np.float32)
+        p[f"{base}.mlp.gate_proj.kernel"] = w((cfg.hidden_size, cfg.intermediate_size))
+        p[f"{base}.mlp.up_proj.kernel"] = w((cfg.hidden_size, cfg.intermediate_size))
+        p[f"{base}.mlp.down_proj.kernel"] = w((cfg.intermediate_size, cfg.hidden_size))
+    p[f"{pref}.norm.scale"] = np.ones(cfg.hidden_size, np.float32)
+
+    rt = build_text_encoder_runtime(cfg)
+    bind_text_encoder_state(rt, p)
+    ids = np.array([[1, 2, 3, 4, 5]], dtype=np.int32)
+    out = np.asarray(text_encoder_forward(rt, jnp.asarray(ids)), dtype=np.float32)
+
+    # Independent NumPy reference (same equations, different implementation).
+    np_map = {
+        "embed": p[f"{pref}.embed_tokens.embedding"],
+        "final_norm": p[f"{pref}.norm.scale"],
+    }
+    for i in range(cfg.num_hidden_layers):
+        base = f"{pref}.layers.{i}"
+        np_map[f"L{i}.in_norm"] = p[f"{base}.input_layernorm.scale"]
+        np_map[f"L{i}.post_norm"] = p[f"{base}.post_attention_layernorm.scale"]
+        np_map[f"L{i}.q"] = p[f"{base}.self_attn.q_proj.kernel"]
+        np_map[f"L{i}.k"] = p[f"{base}.self_attn.k_proj.kernel"]
+        np_map[f"L{i}.v"] = p[f"{base}.self_attn.v_proj.kernel"]
+        np_map[f"L{i}.o"] = p[f"{base}.self_attn.o_proj.kernel"]
+        np_map[f"L{i}.qn"] = p[f"{base}.self_attn.q_norm.scale"]
+        np_map[f"L{i}.kn"] = p[f"{base}.self_attn.k_norm.scale"]
+        np_map[f"L{i}.gate"] = p[f"{base}.mlp.gate_proj.kernel"]
+        np_map[f"L{i}.up"] = p[f"{base}.mlp.up_proj.kernel"]
+        np_map[f"L{i}.down"] = p[f"{base}.mlp.down_proj.kernel"]
+    ref = _numpy_reference(cfg, np_map, ids)
+
+    assert out.shape == (1, 5, cfg.hidden_size), out.shape
+    max_abs = float(np.max(np.abs(out - ref)))
+    rel = max_abs / (float(np.max(np.abs(ref))) + 1e-9)
+    assert max_abs < 2e-3, f"JAX vs NumPy reference mismatch max_abs={max_abs}"
+    print(f"TEXT_ENCODER_RUNTIME_TINY_FORWARD=PASS shape={out.shape} max_abs={max_abs:.3e} rel={rel:.3e}")
+    cfg_lm = TextEncoderConfig()
+    print("TE_LANGUAGE_MODEL_LEAF_COUNT", TE_LANGUAGE_MODEL_LEAF_COUNT)
+    print("TE_TOTAL_LEAF_COUNT", TE_TOTAL_LEAF_COUNT)
+    print("TEXT_ENCODER_RUNTIME_SELF_CONTAINED=PASS")
