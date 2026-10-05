@@ -1,0 +1,120 @@
+{
+  "status": "PASS",
+  "bundle_revision": "snow-leopard-approved-2026-10-05",
+  "hardware": "TPU v5e-8",
+  "topology": "4x2",
+  "steps": 4,
+  "selected": [
+    {
+      "title": "Snow leopard: mountain scene -> snowy winter",
+      "seed": 52,
+      "mode": "768 q256",
+      "prompt": "Transform only the mountain environment into a snowy winter landscape under cold blue daylight, with snow-covered rocks and distant peaks. Preserve the snow leopard exactly: same pose, body proportions, face, eyes, fur pattern, spots, tail, paws, and expression. Keep the camera angle, framing, foreground rock, subject placement, and overall composition unchanged.",
+      "source_provenance": "Previously published Mage-Flow-Turbo sample asset; no independent source-image ownership or standalone reuse license is asserted by this repository.",
+      "before": "assets/snow-leopard-before-mountain.png",
+      "after": "assets/snow-leopard-after-winter-768-seed52.png",
+      "before_sha256": "3c5e38143ac732b3a107b954f5f8037ba0dba90ac8a6fd8dbdc844d720f8ad3e",
+      "before_size": [1048, 1048],
+      "after_sha256": "84f8da54ee56deb2649ded7f55ccc6c6150bb7cfea4b70fe0cb3ec8a7b365aaf",
+      "after_size": [768, 768]
+    },
+    {
+      "title": "Portrait: rain -> golden hour",
+      "seed": 43,
+      "mode": "768 q256",
+      "prompt": "Remove rain and create warm golden-hour lighting while preserving the person, clothing, backpack and framing.",
+      "before": "assets/portrait-before-rain-1024.png",
+      "after": "assets/portrait-after-golden-hour-768-seed43.png",
+      "before_sha256": "8bd09d566aec1921ce49fbe9fb7140f601b068254cbfc2d150db2f339e590375",
+      "before_size": [1024, 1024],
+      "after_sha256": "6b484359ad9bd6482ee0dabc4a79b921cd2ad8f9e1a1e32abb584a327d4006f2",
+      "after_size": [768, 768]
+    },
+    {
+      "title": "Floating island: green -> winter",
+      "seed": 43,
+      "mode": "768 q256",
+      "prompt": "Transform the green floating island into winter while preserving island geometry, waterfalls and camera composition.",
+      "before": "assets/island-before-green-1024.png",
+      "after": "assets/island-after-winter-768-seed43.png",
+      "before_sha256": "26fc00ed287aaf9d5abe011d296ceee0dd089d3237ccc8b33062b3b5c308b678",
+      "before_size": [1024, 1024],
+      "after_sha256": "d14670a066f87d2bad8e47dc63960505f651b2e4c99f450107eada1475de24e3",
+      "after_size": [768, 768]
+    },
+    {
+      "title": "Monorail: white -> deep red",
+      "seed": 43,
+      "mode": "768 q256",
+      "prompt": "Repaint the monorail body deep red while retaining the rail, city scene, weather, reflections and camera composition.",
+      "before": "assets/monorail-before-white-1024.png",
+      "after": "assets/monorail-after-red-768-seed43.png",
+      "before_sha256": "ff1b3155f67e2310d2172ed10619f5365086a6696268e783f72f773793dd0393",
+      "before_size": [1024, 1024],
+      "after_sha256": "0b1da54e5237add197eb451a7de83eba963f49547d07b247d9938221d958a372",
+      "after_size": [768, 768]
+    }
+  ],
+  "technical_evidence": {
+    "status": "PASS",
+    "hardware": "TPU v5e-8",
+    "topology": "4x2",
+    "steps": 4,
+    "production_qualified_baseline": {
+      "resolution": 512,
+      "query_chunk": 256,
+      "frozen_acceptance_bit_exact_4_seeds": true
+    },
+    "validated_scaling_768": {
+      "query_chunk": 256,
+      "repeat_bit_exact_4_seeds": true,
+      "repeat_transformer_wall_s": 66.59392666816711
+    },
+    "experimental_high_resolution_1024": {
+      "query_chunk": 128,
+      "fox_repeat_bit_exact_4_seeds": true,
+      "non_fox_island_pass": true,
+      "island_transformer_wall_s": 133.22250151634216,
+      "island_peak_hbm_bytes": 15944458240
+    },
+    "query_chunk_cross_parity": {
+      "512_q128_vs_q256_bit_exact": false,
+      "interpretation": "q128 is deterministic within q128, but is not bit-exact with q256."
+    },
+    "object_vehicle_showcase": {
+      "status": "PASS",
+      "resolution": 768,
+      "query_chunk": 256,
+      "selected_seed": 43,
+      "transformer_wall_s": 67.0084056854248,
+      "peak_hbm_bytes": 13459942400
+    },
+    "wildlife_showcase": {
+      "status": "PASS",
+      "resolution": 768,
+      "query_chunk": 256,
+      "selected_seed": 52,
+      "transformer_wall_s": 67.25575757026672,
+      "peak_hbm_bytes": 13473616384
+    }
+  },
+  "high_resolution_proofs": [
+    {
+      "subject": "fox",
+      "resolution": 1024,
+      "query_chunk": 128,
+      "file": "assets/fox-after-autumn-1024-q128-seed42.png",
+      "sha256": "32dff499ed9bd54ac0f7211267f0e430424a3bfcd7dd4c7faa1d3ec25dcb51bc",
+      "repeat_bit_exact_4_seeds": true,
+      "experimental": true
+    },
+    {
+      "subject": "floating-island",
+      "resolution": 1024,
+      "query_chunk": 128,
+      "file": "assets/island-after-winter-1024-q128-seed43.png",
+      "sha256": "4dc82bf65de677b42faed37791716d377661034dfe7bf4fd3931c7c5912bfcf8",
+      "experimental": true
+    }
+  ]
+}

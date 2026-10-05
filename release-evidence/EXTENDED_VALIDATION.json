@@ -1,0 +1,44 @@
+{
+  "status": "PASS",
+  "hardware": "TPU v5e-8",
+  "topology": "4x2",
+  "steps": 4,
+  "production_qualified_baseline": {
+    "resolution": 512,
+    "query_chunk": 256,
+    "frozen_acceptance_bit_exact_4_seeds": true
+  },
+  "validated_scaling_768": {
+    "query_chunk": 256,
+    "repeat_bit_exact_4_seeds": true,
+    "repeat_transformer_wall_s": 66.59392666816711
+  },
+  "experimental_high_resolution_1024": {
+    "query_chunk": 128,
+    "fox_repeat_bit_exact_4_seeds": true,
+    "non_fox_island_pass": true,
+    "island_transformer_wall_s": 133.22250151634216,
+    "island_peak_hbm_bytes": 15944458240
+  },
+  "query_chunk_cross_parity": {
+    "512_q128_vs_q256_bit_exact": false,
+    "interpretation": "q128 is deterministic within q128, but is not bit-exact with q256."
+  },
+  "object_vehicle_showcase": {
+    "status": "PASS",
+    "resolution": 768,
+    "query_chunk": 256,
+    "selected_seed": 43,
+    "transformer_wall_s": 67.0084056854248,
+    "peak_hbm_bytes": 13459942400
+  },
+  "wildlife_showcase": {
+    "status": "PASS",
+    "subject": "snow-leopard",
+    "resolution": 768,
+    "query_chunk": 256,
+    "selected_seed": 52,
+    "transformer_wall_s": 67.25575757026672,
+    "peak_hbm_bytes": 13473616384
+  }
+}
