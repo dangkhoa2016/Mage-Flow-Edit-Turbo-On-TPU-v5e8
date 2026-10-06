@@ -1,0 +1,15 @@
+# Default owner for repository changes
+* @dangkhoa2016
+
+# Runtime and acceptance authority
+/runtime/ @dangkhoa2016
+/bootstrap/ @dangkhoa2016
+/acceptance/ @dangkhoa2016
+
+# Licensing and community policy
+/LICENSE @dangkhoa2016
+/MODEL_LICENSE.md @dangkhoa2016
+/MODEL_LICENSE.vi.md @dangkhoa2016
+/THIRD_PARTY_NOTICES.md @dangkhoa2016
+/licenses/ @dangkhoa2016
+/.github/ @dangkhoa2016

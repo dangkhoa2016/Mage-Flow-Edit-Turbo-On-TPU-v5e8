@@ -1,0 +1,28 @@
+name: Feature request / Đề xuất tính năng
+description: Propose a focused improvement / Đề xuất một cải tiến có phạm vi rõ ràng
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Vấn đề
+      description: What workflow or limitation should be improved? / Workflow hoặc giới hạn nào cần cải thiện?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change / Thay đổi đề xuất
+    validations:
+      required: true
+  - type: dropdown
+    id: qualification
+    attributes:
+      label: TPU re-qualification impact / Ảnh hưởng tới TPU re-qualification
+      options:
+        - No runtime semantic change / Không đổi runtime semantic
+        - Runtime semantic change; re-qualification required / Có đổi runtime semantic; cần re-qualification
+        - Unsure / Chưa chắc
+    validations:
+      required: true

@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security / Bảo mật
+    url: https://github.com/dangkhoa2016/Mage-Flow-Edit-Turbo-On-TPU-v5e8/blob/main/SECURITY.md
+    about: Please follow the private-reporting guidance for security-sensitive issues / Hãy làm theo hướng dẫn báo cáo riêng tư cho vấn đề bảo mật.

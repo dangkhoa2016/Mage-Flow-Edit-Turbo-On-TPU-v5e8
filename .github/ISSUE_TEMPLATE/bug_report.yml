@@ -1,0 +1,64 @@
+name: Bug report / Báo lỗi
+description: Report a reproducible runtime, documentation, or packaging problem / Báo cáo lỗi runtime, tài liệu hoặc packaging có thể tái lập
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Do not include tokens, credentials, private URLs, or sensitive data.
+        Cảm ơn bạn đã báo lỗi. Không đăng token, credential, URL riêng tư hoặc dữ liệu nhạy cảm.
+  - type: input
+    id: commit
+    attributes:
+      label: Commit or release / Commit hoặc release
+      description: Exact commit SHA or release/tag / SHA hoặc release/tag chính xác.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area / Khu vực
+      options:
+        - Runtime / inference
+        - TPU / sharding / attention
+        - Model artifact / paths
+        - Documentation / Tài liệu
+        - CI / tests
+        - Licensing / attribution
+        - Other / Khác
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment / Môi trường
+      description: Platform, accelerator, JAX/Keras versions, topology, resolution when relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps / Các bước tái lập
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior / Hành vi mong đợi
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and logs / Hành vi thực tế và log
+      description: Sanitize all secrets before posting / Xóa mọi secret trước khi đăng.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks / Kiểm tra an toàn
+      options:
+        - label: I removed tokens, credentials, private URLs, and sensitive data / Tôi đã xóa token, credential, URL riêng tư và dữ liệu nhạy cảm.
+          required: true
