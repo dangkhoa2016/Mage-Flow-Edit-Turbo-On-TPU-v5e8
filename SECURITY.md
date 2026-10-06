@@ -1,6 +1,7 @@
 # Security Policy
 
 > 🌐 Language: **English** · [Tiếng Việt](SECURITY.vi.md)
+
 ## Supported version
 
 The current `main` branch and the published `v1.0.0` release baseline are the supported public surfaces for security reports.

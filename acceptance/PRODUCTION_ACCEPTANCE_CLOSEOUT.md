@@ -1,6 +1,7 @@
 # Production Acceptance Closeout
 
 > 🌐 Language: **English** · [Tiếng Việt](PRODUCTION_ACCEPTANCE_CLOSEOUT.vi.md)
+
 Mage-Flow-Edit-Turbo full multimodal JAX inference was qualified on Kaggle TPU v5e-8 at 512×512, topology `4x2`, four denoising steps, and seeds 42–45.
 
 ## Acceptance matrix

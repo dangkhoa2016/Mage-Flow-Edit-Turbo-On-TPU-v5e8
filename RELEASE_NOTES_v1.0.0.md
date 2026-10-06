@@ -19,7 +19,7 @@ Snow Leopard winter (768/q256 seed 52), Portrait golden hour (768/q256 seed 43),
 
 - [Hugging Face model](https://huggingface.co/dangkhoa2016/mage-flow-edit-turbo-jax-tpu-v5e8)
 - [Kaggle model](https://www.kaggle.com/models/dangkhoa2016/mage-flow-edit-turbo-jax-tpu-v5e8)
-- [Kaggle production notebook](https://www.kaggle.com/code/dangkhoa2016/mage-flow-edit-turbo-tpu-v5e-8-production-demo)
+- [Kaggle Public Acceptance notebook](https://www.kaggle.com/code/dangkhoa2016/mage-flow-edit-turbo-tpu-v5e8-public-acceptance)
 - [GitHub release](https://github.com/dangkhoa2016/Mage-Flow-Edit-Turbo-On-TPU-v5e8/releases/tag/v1.0.0)
 
 ## Release asset

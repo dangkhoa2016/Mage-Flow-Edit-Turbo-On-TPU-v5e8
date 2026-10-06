@@ -1,6 +1,7 @@
 # Third-Party Notices
 
 > 🌐 Language: **English** · [Tiếng Việt](THIRD_PARTY_NOTICES.vi.md)
+
 This repository depends on and interoperates with third-party software, model components, and hosted services. Their original licenses and terms remain applicable.
 
 ## Model-related components

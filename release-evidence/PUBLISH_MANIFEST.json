@@ -100,15 +100,6 @@
   },
   "high_resolution_proofs": [
     {
-      "subject": "fox",
-      "resolution": 1024,
-      "query_chunk": 128,
-      "file": "assets/fox-after-autumn-1024-q128-seed42.png",
-      "sha256": "32dff499ed9bd54ac0f7211267f0e430424a3bfcd7dd4c7faa1d3ec25dcb51bc",
-      "repeat_bit_exact_4_seeds": true,
-      "experimental": true
-    },
-    {
       "subject": "floating-island",
       "resolution": 1024,
       "query_chunk": 128,

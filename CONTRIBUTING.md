@@ -1,6 +1,7 @@
 # Contributing
 
 > 🌐 Language: **English** · [Tiếng Việt](CONTRIBUTING.vi.md)
+
 Thank you for contributing to Mage-Flow-Edit-Turbo-On-TPU-v5e8.
 
 ## Scope

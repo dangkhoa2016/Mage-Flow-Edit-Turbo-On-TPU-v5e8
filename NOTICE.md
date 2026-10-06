@@ -1,6 +1,7 @@
 # Notices and Upstream Attribution
 
 > 🌐 Language: **English** · [Tiếng Việt](NOTICE.vi.md)
+
 This repository is an independent JAX/Keras/TPU conversion-runtime engineering project for the Mage-Flow-Edit-Turbo inference stack.
 
 It is not an official Microsoft, Qwen, Alibaba, Google, Keras, Kaggle, Hugging Face, or GitHub release.

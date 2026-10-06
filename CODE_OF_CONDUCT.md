@@ -1,6 +1,7 @@
 # Code of Conduct
 
 > 🌐 Language: **English** · [Tiếng Việt](CODE_OF_CONDUCT.vi.md)
+
 ## Our commitment
 
 We are committed to a respectful, inclusive, and technically constructive project environment.

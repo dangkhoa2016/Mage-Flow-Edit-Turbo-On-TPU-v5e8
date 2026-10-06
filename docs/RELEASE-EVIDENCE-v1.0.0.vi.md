@@ -7,7 +7,7 @@
 - `acceptance/PRODUCTION_ACCEPTANCE.json`: production acceptance 512/q256, 3/3 PASS.
 - `release-evidence/EXTENDED_VALIDATION.json`: validation scaling/high-resolution.
 - `release-evidence/PUBLISH_MANIFEST.json`: lựa chọn showcase công khai và hash đã duyệt.
-- `notebooks/kaggle-production-demo.ipynb`: production walkthrough công khai.
+- `notebooks/kaggle-production-demo.ipynb`: source thực thi được giữ lại trong repository để phục vụ tái lập; đây không phải public Kaggle notebook hiện hành.
 
 ## Showcase chuẩn
 

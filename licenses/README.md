@@ -1,6 +1,7 @@
 # Upstream License Copies
 
 > 🌐 Language: **English** · [Tiếng Việt](README.vi.md)
+
 This directory preserves license texts for upstream model-related components referenced by this repository and the public JAX/Orbax model distribution.
 
 | File | Upstream source | Component |
