@@ -1,5 +1,6 @@
 # Mage-Flow-Edit-Turbo TPU v5e-8 benchmark evidence
 
+> 🌐 Language: **English** · [Tiếng Việt](BENCHMARKS.vi.md)
 | Resolution | Query chunk | Conditioning internal | Transformer compute | Peak HBM/device | VAE cold |
 |---:|---:|---:|---:|---:|---:|
 | 512 | 256 | 61.10s | 49.72s | 10.39 GB | 18.49s |
