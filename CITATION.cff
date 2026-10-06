@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+title: Mage-Flow-Edit-Turbo on TPU v5e-8
+message: "If this runtime engineering work is useful, please cite this repository and the applicable upstream model work."
+type: software
+authors:
+  - family-names: Khoa
+    given-names: Đăng
+    email: i.am@dangkhoa.dev
+repository-code: https://github.com/dangkhoa2016/Mage-Flow-Edit-Turbo-On-TPU-v5e8
+version: 1.0.0
+date-released: 2026-10-05
+license: MIT
